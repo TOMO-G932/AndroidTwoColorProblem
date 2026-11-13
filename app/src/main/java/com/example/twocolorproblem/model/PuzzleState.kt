@@ -7,9 +7,9 @@ import kotlinx.coroutines.sync.withLock
 import kotlin.time.Duration.Companion.milliseconds
 
 
-///************************************************************************
-/// PuzzleState パズルの問題と解答状態を管理するクラス
-///************************************************************************
+/**************************************************************************
+ * パズルの問題と解答状態を管理するクラス
+ **************************************************************************/
 data class PuzzleState(
     // オブジェクト生成時に受け取った値で初期化される
     var isPuzzleSolved: Boolean,
@@ -18,12 +18,6 @@ data class PuzzleState(
 ) {
     // バックグラウンド処理が多重起動されないように排他処理をおこなう
     val actionMutex = Mutex()
-//    var isProcessing: Boolean = false
-//        private set
-//    // オブジェクト生成時に受け取ったpuzzleDataと同じサイズで初期化される
-//    var answerData: Array<IntArray> = Array(puzzleData.size) { r ->
-//        IntArray(puzzleData[r].size)
-//    }
     private var isSolved: Array<Array<Boolean>> = Array(puzzleData.size) { r ->
         Array(puzzleData[r].size) { false }
     }
@@ -137,6 +131,15 @@ data class PuzzleState(
             }
         }
     }
+
+    /**************************************************************************
+     * 指定された範囲のセルを未回答状態に戻す
+     * Defaultスレッドから呼び出すことを前提としている
+     * @param minR 最小列番号
+     * @param maxR 最大列番号
+     * @param minC 最小行番号
+     * @param maxC 最大行番号
+     */
     suspend fun doCancelColor(minR: Int, maxR: Int, minC: Int, maxC: Int) {
         actionMutex.withLock {
             for (r in minR..maxR) {
@@ -151,17 +154,25 @@ data class PuzzleState(
             }
         }
     }
-    ///************************************************************************
-    /// 指定されたセルを起点に問題が1になっているセルの周りの白黒を自動的に解決する
-    ///************************************************************************
+    /**************************************************************************
+     * 指定されたセルを起点に問題が1になっているセルの周りの白黒を自動的に解決する
+     * @param r 行番号
+     * @param c 列番号
+     * @param color 色（黒または白）
+     * @param onUpdateStep ひとつ解決するごとに表示するためのコールバック
+     **************************************************************************/
     suspend fun doAutoSolve(r: Int, c: Int, color: Int, onUpdateStep: suspend () -> Unit) {
         actionMutex.withLock {
             autoSolve(r, c, color, onUpdateStep)
         }
     }
-    ///************************************************************************
-    /// 自動解決処理の再帰呼び出し部分の関数
-    ///************************************************************************
+    /***************************************************************************
+     * 自動解決処理の再帰呼び出し部分の関数
+     * @param r 行番号
+     * @param c 列番号
+     * @param color 色（黒または白）
+     * @param onUpdateStep ひとつ解決するごとに表示するためのコールバック
+     ***************************************************************************/
     private suspend fun autoSolve(r: Int, c: Int, color: Int, onUpdateStep: suspend () -> Unit) {
         if (puzzleData[r][c] == 1) {
             for (i in nextXY.indices) {
@@ -193,9 +204,10 @@ data class PuzzleState(
             }
         }
     }
-    ///************************************************************************
-    /// 解答結果の妥当性を解答データ全体に対して行う
-    ///************************************************************************
+    /**************************************************************************
+     * 解答結果の妥当性を解答データ全体に対して行う
+     * @param onUpdateStep 数字のエラー表示するためのコールバック
+     **************************************************************************/
     suspend fun validateSolution(onUpdateStep: suspend () -> Unit) {
         actionMutex.withLock {
             for (row in isSolved) {
@@ -239,11 +251,13 @@ data class PuzzleState(
             }
         }
     }
-    ///************************************************************************
-    /// 連続するセルの数を数える
-    /// count[0] 連続セルの数　count[1] 隣接する未決定セルの数
-    ///   カウントした連続セルに妥当性がない場合はエラーをtrueにする
-    ///************************************************************************
+    /**************************************************************************
+     * 連続するセルの数を数える
+     * @param r 行番号
+     * @param c 列番号
+     * @param count 連続セルの数[0]と隣接する未決定セルの数[1]を格納する配列
+     * @param errorList エラーになったセルのリスト
+     **************************************************************************/
     private fun countCells(r: Int, c: Int, count: IntArray, errorList: MutableList<IntArray>): Boolean {
         var errorFlag = false
         if (!isSolved[r][c] && answerData[r][c] != 0) {
@@ -267,9 +281,10 @@ data class PuzzleState(
         }
         return errorFlag
     }
-    ///************************************************************************
-    /// PuzzleState オブジェクト同士を比較する composeが使うけど、多分使われない
-    ///************************************************************************
+    /**************************************************************************
+     * PuzzleState オブジェクト同士を比較する composeが使うけど、多分使われない
+     * @param other 比較するオブジェクト
+     **************************************************************************/
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (javaClass != other?.javaClass) return false
@@ -278,9 +293,9 @@ data class PuzzleState(
 
         return answerData.contentDeepEquals(other.answerData)
     }
-    ///************************************************************************
-    /// PuzzleState 変化を検知するためのハッシュコードを生成する composeが使うけど、多分使われない
-    ///************************************************************************
+    /**************************************************************************
+     * PuzzleState 変化を検知するためのハッシュコードを生成する composeが使うけど、多分使われない
+     **************************************************************************/
     override fun hashCode(): Int {
         val result = answerData.contentDeepHashCode()
         return result
