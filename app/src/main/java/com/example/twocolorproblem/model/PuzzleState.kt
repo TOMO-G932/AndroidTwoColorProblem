@@ -56,58 +56,70 @@ data class PuzzleState(
     * UIスレッドから呼び出すことを前提としている
     * @param r 行番号
     * @param c 列番号
-    * @return ミューテックスの取得ができず、処理ができなかったらfalse
+    * @return ミューテックスの取得ができず、処理ができなかった、または状態が変わらなかったらfalse
     **************************************************************************/
     fun changeBlack(r: Int, c: Int): Boolean {
         if (!actionMutex.tryLock()) return false
+        var changed = false
         if (r in 0 until row && c in 0 until col) {
             if (r != 0 || c != 0) {
-                answerData[r][c] = BLACK
-                for (row in isSolved) {
-                    row.fill(false)
+                if (answerData[r][c] != BLACK) {
+                    answerData[r][c] = BLACK
+                    for (row in isSolved) {
+                        row.fill(false)
+                    }
+                    changed = true
                 }
             }
         }
         actionMutex.unlock()
-        return true
+        return changed
     }
     /**************************************************************************
      * 指定されたセルを白に変更する
      * UIスレッドから呼び出すことを前提としている
      * @param r 行番号
      * @param c 列番号
-     * @return ミューテックスの取得ができず、処理ができなかったらfalse
+     * @return ミューテックスの取得ができず、処理ができなかった、または状態が変わらなかったらfalse
      **************************************************************************/
     fun changeWhite(r: Int, c: Int): Boolean {
         if (!actionMutex.tryLock()) return false
+        var changed = false
         if (r in 0 until row && c in 0 until col) {
             if (r != 0 || c != 0) {
-                answerData[r][c] = WHITE
-                for (row in isSolved) {
-                    row.fill(false)
+                if (answerData[r][c] != WHITE) {
+                    answerData[r][c] = WHITE
+                    for (row in isSolved) {
+                        row.fill(false)
+                    }
+                    changed = true
                 }
             }
         }
         actionMutex.unlock()
-        return true
+        return changed
     }
     /**************************************************************************
      * 指定されたセルを未設定に変更する
      * UIスレッドから呼び出すことを前提としている
      * @param r 行番号
      * @param c 列番号
-     * @return ミューテックスの取得ができず、処理ができなかったらfalse
+     * @return ミューテックスの取得ができず、処理ができなかった、または状態が変わらなかったらfalse
      **************************************************************************/
     fun cancelColor(r: Int, c: Int): Boolean {
         if (!actionMutex.tryLock()) return false
+        var changed = false
         if (r in 0 until row && c in 0 until col) {
             if (r != 0 || c != 0) {
-                answerData[r][c] = 0
-                if (puzzleData[r][c] != 0) isError[r][c] = false
+                if (answerData[r][c] != 0) {
+                    answerData[r][c] = 0
+                    if (puzzleData[r][c] != 0) isError[r][c] = false
+                    changed = true
+                }
             }
         }
         actionMutex.unlock()
-        return true
+        return changed
     }
 
     /**************************************************************************

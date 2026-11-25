@@ -1,6 +1,9 @@
 package com.example.twocolorproblem
 
+import android.content.Context
 import android.graphics.BitmapFactory
+import android.media.AudioAttributes
+import android.media.SoundPool
 import android.os.Bundle
 import android.util.JsonReader
 import android.util.Log
@@ -11,11 +14,15 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -23,6 +30,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -41,6 +49,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -51,21 +60,27 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
+import coil.decode.GifDecoder
+import coil.request.ImageRequest
 import com.example.twocolorproblem.model.Answer
 import com.example.twocolorproblem.model.AplState
 import com.example.twocolorproblem.model.CellParticle
@@ -80,6 +95,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.io.FileOutputStream
 
 /******************************************************************************
  * Jsonファイルのプロパティを設定する
@@ -91,6 +107,23 @@ private val json = Json {
     encodeDefaults = true
 }
 
+/******************************************************************************
+ * あそび方説明用のステップ
+ ******************************************************************************/
+data class TutorialStep(
+    val gifResId: Int,       // GIF画像リソースID
+    val description: String, // 説明文
+    val durationMs: Long = 4000L // 表示時間(ms)
+)
+
+/******************************************************************************
+ * ドラッグしているときのモード
+ ******************************************************************************/
+enum class DragMode {
+    REVERSE,        // 反転モードでドラッグしている(通常ドラッグ)
+    CANCEL,         // キャンセルモードでドラッグしている(長押しドラッグ)
+    NONE            // ドラッグしていない
+}
 /******************************************************************************
  * メインアクティビティクラス
  *   起動イベントonCreate()を受けてメインアプリ処理をおこなう
@@ -119,6 +152,7 @@ class MainActivity : ComponentActivity() {
  ******************************************************************************/
 @Composable
 fun MainApp(filesDir: File) {
+    val context = LocalContext.current
     var aplState by remember { mutableStateOf<AplState?>(null) }
     val coroutineScope = rememberCoroutineScope()
     val stateJsonFile = File(filesDir, "AplState.json")
@@ -126,6 +160,14 @@ fun MainApp(filesDir: File) {
     LaunchedEffect(filesDir) {
         withContext(Dispatchers.IO) {
             try {
+                val puzzlesDir = File(filesDir, "puzzles")
+                val thumbnailsDir = File(filesDir, "thumbnails")
+                if (!puzzlesDir.exists()) {
+                    copyAssetFolder(context, "puzzles", puzzlesDir)
+                }
+                if (!thumbnailsDir.exists()) {
+                    copyAssetFolder(context, "thumbnails", thumbnailsDir)
+                }
                 if (!stateJsonFile.exists()) {
                     val initialState = AplState()
                     stateJsonFile.writeText(json.encodeToString(initialState)) // インデント付きで整形保存
@@ -227,7 +269,6 @@ fun MainApp(filesDir: File) {
         }
     }
 }
-
 /******************************************************************************
  * パズル選択画面表
  ******************************************************************************/
@@ -250,69 +291,192 @@ fun PuzzleSelectionScreen(
             }?.toList() ?: emptyList()
         }       // pngFiles に thumbnails フォルダ内の png ファイル一覧を保存
     }
+    // GIFアニメ再生中フラグ
+    var isPlayingGifAnimation by remember { mutableStateOf(false) }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .systemBarsPadding()
-            .padding(16.dp)
-    ) {
-        val currentPngFiles = pngFiles      // スマートキャストすることで!!付けなくても大丈夫
-        Text(text = "解きたいパズルを選択してください", style = MaterialTheme.typography.titleLarge)
-        Spacer(modifier = Modifier.height(16.dp))
-        if (currentPngFiles == null) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator() // クルクル回るローディング表示
-            }
-        } else if (currentPngFiles.isEmpty()) {
-            Text(text = "thumbnails フォルダに PNG ファイルが見つかりません。")
-        } else {
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(4),           // <- この設定でpngを横に並べる数が決まる
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .systemBarsPadding()
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(text = stringResource(R.string.select_puzzle_title), style = MaterialTheme.typography.titleLarge)
+            Spacer(modifier = Modifier.height(16.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
             ) {
-                items(currentPngFiles) { file ->
-                    // ファイル名（拡張子なし）を puzzleID として使用
-                    val puzzleID = file.nameWithoutExtension
-
-                    // PNG画像を表示するカードUI（クリック可能）
-                    Card(
-                        onClick = { onPuzzleSelected(puzzleID) },
-                        modifier = Modifier.fillMaxWidth()
+                val currentPngFiles = pngFiles      // スマートキャストすることで!!付けなくても大丈夫
+                if (currentPngFiles == null) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator() // クルクル回るローディング表示
+                    }
+                } else if (currentPngFiles.isEmpty()) {
+                    Text(text = "thumbnails フォルダに PNG ファイルが見つかりません。")
+                } else {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(4),           // <- この設定でpngを横に並べる数が決まる
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.padding(8.dp)
-                        ) {
-                            // PNG ファイルを ImageBitmap にデコードして表示
-                            val bitmap = remember(file) {
-                                BitmapFactory.decodeFile(file.absolutePath)?.asImageBitmap()
-                            }
+                        items(currentPngFiles) { file ->
+                            // ファイル名（拡張子なし）を puzzleID として使用
+                            val puzzleID = file.nameWithoutExtension
 
-                            if (bitmap != null) {
-                                // 画像本来のアスペクト比（幅 / 高さ）を計算
-                                val imageAspectRatio = bitmap.width.toFloat() / bitmap.height.toFloat()
-
-                                Image(
-                                    bitmap = bitmap,
-                                    contentDescription = file.name,
-                                    contentScale = ContentScale.Fit, // 画像全体が収まるように表示（トリミングなし）
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .aspectRatio(imageAspectRatio) // 画像本来の縦横比を維持
-                                )
-                            } else {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .aspectRatio(1f),
-                                    contentAlignment = Alignment.Center
+                            // PNG画像を表示するカードUI（クリック可能）
+                            Card(
+                                onClick = { onPuzzleSelected(puzzleID) },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.padding(8.dp)
                                 ) {
-                                    Text(text = "画像読み込みエラー")
+                                    // PNG ファイルを ImageBitmap にデコードして表示
+                                    val bitmap = remember(file) {
+                                        BitmapFactory.decodeFile(file.absolutePath)?.asImageBitmap()
+                                    }
+
+                                    if (bitmap != null) {
+                                        // 画像本来のアスペクト比（幅 / 高さ）を計算
+                                        val imageAspectRatio = bitmap.width.toFloat() / bitmap.height.toFloat()
+
+                                        Image(
+                                            bitmap = bitmap,
+                                            contentDescription = file.name,
+                                            contentScale = ContentScale.Fit, // 画像全体が収まるように表示（トリミングなし）
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .aspectRatio(imageAspectRatio) // 画像本来の縦横比を維持
+                                        )
+                                    } else {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .aspectRatio(1f),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(text = stringResource(R.string.image_file_read_error))
+                                        }
+                                    }
                                 }
                             }
                         }
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+            AppButton(text = stringResource(R.string.how_to_play), onClick = { isPlayingGifAnimation = true })
+        }
+        // ★ ボタンが押されたら GIFアニメ再生ビューをオーバーレイ表示！
+        if (isPlayingGifAnimation) {
+            GifAnimationViewer(
+                onClose = { isPlayingGifAnimation = false }
+            )
+        }
+    }
+}
+
+/******************************************************************************
+ * あそび方説明オーバーレイ表示画面
+ ******************************************************************************/
+@Composable
+fun GifAnimationViewer(
+    onClose: () -> Unit
+) {
+    // 再生するGIFとテキストのリスト
+    val tutorialSteps = listOf(
+        TutorialStep(R.drawable.guide_1, stringResource(R.string.tutorial_1)),
+        TutorialStep(R.drawable.guide_2, stringResource(R.string.tutorial_2)),
+        TutorialStep(R.drawable.guide_3, stringResource(R.string.tutorial_3)),
+        TutorialStep(R.drawable.guide_4, stringResource(R.string.tutorial_4)),
+        TutorialStep(R.drawable.guide_5, stringResource(R.string.tutorial_5)),
+        TutorialStep(R.drawable.guide_6, stringResource(R.string.tutorial_6))
+    )
+
+    var currentIndex by remember { mutableIntStateOf(0) }
+    val currentStep = tutorialSteps.getOrNull(currentIndex)
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.85f)), // 背景を暗くしてアニメを目立たせる
+        contentAlignment = Alignment.Center
+    ) {
+        if (currentStep != null) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.padding(24.dp)
+            ) {
+                // 再生カウント表示　"STEP n / m"
+                Text(
+                    text = "STEP ${currentIndex + 1} / ${tutorialSteps.size}",
+                    color = Color.Yellow,
+                    style = TextStyle(fontSize = 18.sp)
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // ★ 表示中の GIF アニメーション（Coil が自動で無限ループ連続再生してくれます）
+                val context = LocalContext.current
+                AsyncImage(
+                    model = ImageRequest.Builder(context)
+                        .data(currentStep.gifResId)
+                        .decoderFactory(GifDecoder.Factory())
+                        .build(),
+                    contentDescription = "遊び方GIFアニメ",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxWidth(0.9f)
+                        .fillMaxHeight(0.65f)
+                        .background(Color.White, shape = MaterialTheme.shapes.medium)
+                        .padding(8.dp)
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // ★ アニメーションに同期して表示されるテキスト
+                Text(
+                    text = currentStep.description,
+                    style = TextStyle(fontSize = 18.sp, color = Color.White),
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(30.dp))
+
+                // ★ 「＜ 前へ」「EXIT」「次へ ＞」ナビゲーションコントロール行
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // 1. 「＜ 前へ」ボタン
+                    Button(
+                        onClick = { if (currentIndex > 0) currentIndex-- },
+                        enabled = currentIndex > 0, // 先頭ステップでは無効化
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2196F3))
+                    ) {
+                        Text(text = stringResource(R.string.previous), color = Color.White)
+                    }
+
+                    // 2. 「EXIT (再生終了)」ボタン
+                    Button(
+                        onClick = onClose,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
+                    ) {
+                        Text(text = stringResource(R.string.exit), color = Color.White)
+                    }
+
+                    // 3. 「次へ ＞」ボタン
+                    Button(
+                        onClick = { if (currentIndex < tutorialSteps.size - 1) currentIndex++ },
+                        enabled = currentIndex < tutorialSteps.size - 1, // 最終ステップでは無効化
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2196F3))
+                    ) {
+                        Text(stringResource(R.string.next), color = Color.White)
                     }
                 }
             }
@@ -364,10 +528,10 @@ fun BlockSelectionScreen(
                 verticalArrangement = Arrangement.Center,
                 modifier = Modifier.fillMaxSize()
             ) {
-                Text(text = "パズルデータの読み込みに失敗しました。")
+                Text(text = stringResource(R.string.select_puzzle_title))
                 Spacer(modifier = Modifier.height(16.dp))
                 Button(onClick = onBackToSelectPuzzle) {
-                    Text(text = "パズル選択に戻る")
+                    Text(text = stringResource(R.string.back_to_select))
                 }
             }
         } else {
@@ -387,11 +551,11 @@ fun BlockSelectionScreen(
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 // リセットボタン（倍率が上がった時に元に戻せるようにすると便利です）
                 Row {
-                    AppButton(text = "パズル選択に戻る", onClick = onBackToSelectPuzzle)
+                    AppButton(text = stringResource(R.string.back_to_select), onClick = onBackToSelectPuzzle)
                     if (scale != 1f || offset != Offset.Zero) {
                         Spacer(modifier = Modifier.width(8.dp))
                         AppButton(
-                            text = "拡大リセット",
+                            text = stringResource(R.string.reset_zoom),
                             onClick = {
                                 scale = 1f
                                 offset = Offset.Zero
@@ -552,10 +716,30 @@ fun PuzzleBlockPlayScreen(
     // ドラッグ範囲選択用
     var startCell by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     var currentCell by remember { mutableStateOf<Pair<Int, Int>?>(null) }
-    var isLongPressDrag by remember { mutableStateOf(false) }
+    var dragMode by remember { mutableStateOf(DragMode.NONE) }
     // パズル終了時のパーティクル用アニメーション状態
     val clearAnimProgress = remember { Animatable(0f) }
     var particles by remember { mutableStateOf<List<CellParticle>>(emptyList()) }
+    // パズル完成時の効果音
+    val context = LocalContext.current
+    val soundPool = remember {
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_GAME)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+        SoundPool.Builder()
+            .setMaxStreams(3) // 同時再生数
+            .setAudioAttributes(audioAttributes)
+            .build()
+    }
+    val soundId = remember(context) {
+        soundPool.load(context, R.raw.sparkle, 1)
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            soundPool.release()
+        }
+    }
 
     val answerJsonFile = File(filesDir, "puzzles/$puzzleID/$blockID/answer.json")
     val answerBinaryFile = File(filesDir, "puzzles/$puzzleID/$blockID/answer.bin")
@@ -594,7 +778,7 @@ fun PuzzleBlockPlayScreen(
         }
     }
 
-    BoxWithConstraints(
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .systemBarsPadding() // ★1. ステータスバー（時計・バッテリー）との重なりを防ぐ
@@ -607,45 +791,47 @@ fun PuzzleBlockPlayScreen(
             }
         }
         else {
-            val state = puzzleState ?: return@BoxWithConstraints
-            val cellWidth = constraints.maxWidth / state.col
-            val cellHeight = constraints.maxHeight / state.row
-            val cellSize = minOf(cellWidth, cellHeight)
-            val density = LocalDensity.current
-            val boardWidthDp = with(density) { (cellSize * state.col).toDp() }
-            val boardHeightDp = with(density) { (cellSize * state.row).toDp() }
-
-            // パズルクリア時のパーティクル発動処理（refreshTrigger の変更時も再評価する）
-            LaunchedEffect(state.isPuzzleSolved, refreshTrigger) {
-                if (state.isPuzzleSolved) {
-                    particles = createGridParticles(
-                        rows = state.row,
-                        cols = state.col,
-                        cellSize = cellSize
-                    )
-                    clearAnimProgress.snapTo(0f)
-                    clearAnimProgress.animateTo(
-                        targetValue = 1f,
-                        animationSpec = tween(durationMillis = 2500, easing = LinearEasing)
-                    )
-                } else {
-                    clearAnimProgress.snapTo(0f)
-                }
-            }
+            val state = puzzleState ?: return@Box
             Column(
                 modifier = Modifier.fillMaxSize(),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 AppButton(
-                    text = "ブロック選択画面に戻る",
+                    text = stringResource   (R.string.back_to_select_block),
                     onClick = { onBackToSelectBlock(state) }
                 )
-                Box(
+                Spacer(modifier = Modifier.height(8.dp))
+                BoxWithConstraints(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f),
                     contentAlignment = Alignment.Center
                 ) {
+                    val cellWidth = constraints.maxWidth / state.col
+                    val cellHeight = constraints.maxHeight / state.row
+                    val cellSize = minOf(cellWidth, cellHeight)
+                    val density = LocalDensity.current
+                    val boardWidthDp = with(density) { (cellSize * state.col).toDp() }
+                    val boardHeightDp = with(density) { (cellSize * state.row).toDp() }
+                    LaunchedEffect(state.isPuzzleSolved, refreshTrigger) {
+                        if (state.isPuzzleSolved) {
+                            // ★ キラキラ効果音を再生！（左音量, 右音量, 優先度, ループ(0=なし), 再生速度）
+                            soundPool.play(soundId, 1.0f, 1.0f, 0, 0, 1.0f)
+                            // パーティクルアニメーションの開始処理
+                            particles = createGridParticles(
+                                rows = state.row,
+                                cols = state.col,
+                                cellSize = cellSize
+                            )
+                            clearAnimProgress.snapTo(0f)
+                            clearAnimProgress.animateTo(
+                                targetValue = 1f,
+                                animationSpec = tween(durationMillis = 2500, easing = LinearEasing)
+                            )
+                        } else {
+                            clearAnimProgress.snapTo(0f)
+                        }
+                    }
                     Canvas(
                         modifier = Modifier
                             .size(boardWidthDp, boardHeightDp)
@@ -654,8 +840,10 @@ fun PuzzleBlockPlayScreen(
                                 detectTapGestures(
                                     onTap = { offset ->
                                         if (state.isPuzzleSolved) return@detectTapGestures
-                                        val c = (offset.x / cellSize).toInt().coerceIn(0, state.col - 1)
-                                        val r = (offset.y / cellSize).toInt().coerceIn(0, state.row - 1)
+                                        val c =
+                                            (offset.x / cellSize).toInt().coerceIn(0, state.col - 1)
+                                        val r =
+                                            (offset.y / cellSize).toInt().coerceIn(0, state.row - 1)
                                         if (state.changeBlack(r, c)) {  // シングルタップが有効に処理されたか？
                                             refreshTrigger++
                                             coroutineScope.launch(Dispatchers.Default) {
@@ -678,8 +866,10 @@ fun PuzzleBlockPlayScreen(
                                     },
                                     onDoubleTap = { offset ->
                                         if (state.isPuzzleSolved) return@detectTapGestures
-                                        val c = (offset.x / cellSize).toInt().coerceIn(0, state.col - 1)
-                                        val r = (offset.y / cellSize).toInt().coerceIn(0, state.row - 1)
+                                        val c =
+                                            (offset.x / cellSize).toInt().coerceIn(0, state.col - 1)
+                                        val r =
+                                            (offset.y / cellSize).toInt().coerceIn(0, state.row - 1)
                                         if (state.changeWhite(r, c)) {
                                             refreshTrigger++
                                             coroutineScope.launch(Dispatchers.Default) {
@@ -702,8 +892,10 @@ fun PuzzleBlockPlayScreen(
                                     },
                                     onLongPress = { offset ->
                                         if (state.isPuzzleSolved) return@detectTapGestures
-                                        val c = (offset.x / cellSize).toInt().coerceIn(0, state.col - 1)
-                                        val r = (offset.y / cellSize).toInt().coerceIn(0, state.row - 1)
+                                        val c =
+                                            (offset.x / cellSize).toInt().coerceIn(0, state.col - 1)
+                                        val r =
+                                            (offset.y / cellSize).toInt().coerceIn(0, state.row - 1)
                                         if (state.cancelColor(r, c)) {
                                             refreshTrigger++
                                             coroutineScope.launch(Dispatchers.Default) {
@@ -720,20 +912,25 @@ fun PuzzleBlockPlayScreen(
                                 )
                             }
                             // 2. ドラッグジェスチャー検知
-                            .pointerInput(state) {
+                            .pointerInput(UInt) {
                                 detectDragGestures(
                                     onDragStart = { offset ->
                                         if (state.isPuzzleSolved) return@detectDragGestures
-                                        val c = (offset.x / cellSize).toInt().coerceIn(0, state.col - 1)
-                                        val r = (offset.y / cellSize).toInt().coerceIn(0, state.row - 1)
+                                        val c =
+                                            (offset.x / cellSize).toInt().coerceIn(0, state.col - 1)
+                                        val r =
+                                            (offset.y / cellSize).toInt().coerceIn(0, state.row - 1)
+                                        dragMode = DragMode.REVERSE
                                         startCell = Pair(r, c)
                                         currentCell = Pair(r, c)
                                     },
                                     onDrag = { change, _ ->
                                         if (state.isPuzzleSolved) return@detectDragGestures
                                         change.consume()
-                                        val c = (change.position.x / cellSize).toInt().coerceIn(0, state.col - 1)
-                                        val r = (change.position.y / cellSize).toInt().coerceIn(0, state.row - 1)
+                                        val c = (change.position.x / cellSize).toInt()
+                                            .coerceIn(0, state.col - 1)
+                                        val r = (change.position.y / cellSize).toInt()
+                                            .coerceIn(0, state.row - 1)
                                         currentCell = Pair(r, c)
                                     },
                                     onDragEnd = {
@@ -742,8 +939,10 @@ fun PuzzleBlockPlayScreen(
                                         if (startCell != null && currentCell != null) {
                                             val minR = minOf(startCell!!.first, currentCell!!.first)
                                             val maxR = maxOf(startCell!!.first, currentCell!!.first)
-                                            val minC = minOf(startCell!!.second, currentCell!!.second)
-                                            val maxC = maxOf(startCell!!.second, currentCell!!.second)
+                                            val minC =
+                                                minOf(startCell!!.second, currentCell!!.second)
+                                            val maxC =
+                                                maxOf(startCell!!.second, currentCell!!.second)
 
                                             coroutineScope.launch(Dispatchers.Default) {
                                                 state.doReverseColor(minR, maxR, minC, maxC)
@@ -757,27 +956,32 @@ fun PuzzleBlockPlayScreen(
                                                 refreshTrigger++
                                             }
                                         }
-                                        isLongPressDrag = false
+                                        dragMode = DragMode.NONE
                                         startCell = null
                                         currentCell = null
                                     }
                                 )
                             }
                             // 3. 長押しドラッグジェスチャー検知
-                            .pointerInput(state) {
+                            .pointerInput(UInt) {
                                 detectDragGesturesAfterLongPress(
                                     onDragStart = { offset ->
                                         if (state.isPuzzleSolved) return@detectDragGesturesAfterLongPress
-                                        val c = (offset.x / cellSize).toInt().coerceIn(0, state.col - 1)
-                                        val r = (offset.y / cellSize).toInt().coerceIn(0, state.row - 1)
+                                        val c =
+                                            (offset.x / cellSize).toInt().coerceIn(0, state.col - 1)
+                                        val r =
+                                            (offset.y / cellSize).toInt().coerceIn(0, state.row - 1)
+                                        dragMode = DragMode.CANCEL
                                         startCell = Pair(r, c)
                                         currentCell = Pair(r, c)
                                     },
                                     onDrag = { change, _ ->
                                         if (state.isPuzzleSolved) return@detectDragGesturesAfterLongPress
                                         change.consume()
-                                        val c = (change.position.x / cellSize).toInt().coerceIn(0, state.col - 1)
-                                        val r = (change.position.y / cellSize).toInt().coerceIn(0, state.row - 1)
+                                        val c = (change.position.x / cellSize).toInt()
+                                            .coerceIn(0, state.col - 1)
+                                        val r = (change.position.y / cellSize).toInt()
+                                            .coerceIn(0, state.row - 1)
                                         currentCell = Pair(r, c)
                                     },
                                     onDragEnd = {
@@ -786,8 +990,10 @@ fun PuzzleBlockPlayScreen(
                                         if (startCell != null && currentCell != null) {
                                             val minR = minOf(startCell!!.first, currentCell!!.first)
                                             val maxR = maxOf(startCell!!.first, currentCell!!.first)
-                                            val minC = minOf(startCell!!.second, currentCell!!.second)
-                                            val maxC = maxOf(startCell!!.second, currentCell!!.second)
+                                            val minC =
+                                                minOf(startCell!!.second, currentCell!!.second)
+                                            val maxC =
+                                                maxOf(startCell!!.second, currentCell!!.second)
 
                                             coroutineScope.launch(Dispatchers.Default) {
                                                 state.doCancelColor(minR, maxR, minC, maxC)
@@ -801,7 +1007,7 @@ fun PuzzleBlockPlayScreen(
                                                 refreshTrigger++
                                             }
                                         }
-                                        isLongPressDrag = false
+                                        dragMode = DragMode.NONE
                                         startCell = null
                                         currentCell = null
                                     }
@@ -866,6 +1072,35 @@ fun PuzzleBlockPlayScreen(
                             }
                         }
                         // --------------------------------------------------
+                        // ドラッグ中のエリア表示
+                        // --------------------------------------------------
+                        if (dragMode != DragMode.NONE && startCell != null && currentCell != null) {
+                            val minR = minOf(startCell!!.first, currentCell!!.first)
+                            val maxR = maxOf(startCell!!.first, currentCell!!.first)
+                            val minC = minOf(startCell!!.second, currentCell!!.second)
+                            val maxC = maxOf(startCell!!.second, currentCell!!.second)
+
+                            val rectLeft = minC * cellSize.toFloat()
+                            val rectTop = minR * cellSize.toFloat()
+                            val rectWidth = (maxC - minC + 1) * cellSize.toFloat()
+                            val rectHeight = (maxR - minR + 1) * cellSize.toFloat()
+                            val topLeft = Offset(rectLeft, rectTop)
+                            val rectSize = Size(rectWidth, rectHeight)
+
+                            // モードによって色を完全に切り替える！
+                            val (fillColor, borderColor) = when (dragMode) {
+                                DragMode.REVERSE -> Color(0xFF2196F3).copy(alpha = 0.2f) to Color(0xFF2196F3) // ★ to を追加
+                                DragMode.CANCEL  -> Color(0xFF9E9E9E).copy(alpha = 0.25f) to Color(0xFF757575) // ★ to を追加
+                                DragMode.NONE    -> Color.Transparent to Color.Transparent
+                            }
+
+                            // 四角形の塗りつぶし
+                            drawRect(color = fillColor, topLeft = topLeft, size = rectSize)
+                            // 四角形の枠線
+                            drawRect(color = borderColor, topLeft = topLeft, size = rectSize, style = Stroke(width = 4f))
+
+                        }
+                        // --------------------------------------------------
                         // ★ 3. マスの上にパーティクルを重ねて描画
                         // --------------------------------------------------
                         if (clearAnimProgress.value > 0f && clearAnimProgress.value < 1f) {
@@ -901,6 +1136,9 @@ fun PuzzleBlockPlayScreen(
 
 /******************************************************************************
  * 標準のアプリケーションのボタンを定義する
+ *   Windowsフォームでおなじみの立体的なボタン
+ * @param text ボタンに表示するテキスト
+ * @param onClick ボタンがクリックされたときの処理
  ******************************************************************************/
 @Composable
 fun AppButton(
@@ -908,14 +1146,67 @@ fun AppButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Button(
-        onClick = onClick,
-        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50)),
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+
+    val baseColor = Color(0xFF4CAF50)
+    val brightColor = baseColor + Color(0xFF404040)
+    val darkColor = baseColor - Color(0xFF404040)
+    // 押されている時は凹み（影と光が反転）、通常時は立体的に浮き出る（上が白、下が濃い影）
+    val highlightColor = if (isPressed) darkColor else brightColor
+    val shadowColor = if (isPressed) brightColor else darkColor
+
+    Box(
         modifier = modifier
+            .background(baseColor)
+            .drawBehind {
+                val strokeWidth = 6f // 枠線の太さ
+
+                // 1. 上辺（光のハイライト）
+                drawLine(
+                    color = highlightColor,
+                    start = Offset(0f, strokeWidth / 2),
+                    end = Offset(size.width, strokeWidth / 2),
+                    strokeWidth = strokeWidth
+                )
+                // 2. 左辺（光のハイライト）
+                drawLine(
+                    color = highlightColor,
+                    start = Offset(strokeWidth / 2, 0f),
+                    end = Offset(strokeWidth / 2, size.height),
+                    strokeWidth = strokeWidth
+                )
+                // 3. 下辺（立体シャドウ）
+                drawLine(
+                    color = shadowColor,
+                    start = Offset(0f, size.height - strokeWidth / 2),
+                    end = Offset(size.width, size.height - strokeWidth / 2),
+                    strokeWidth = strokeWidth
+                )
+                // 4. 右辺（立体シャドウ）
+                drawLine(
+                    color = shadowColor,
+                    start = Offset(size.width - strokeWidth / 2, 0f),
+                    end = Offset(size.width - strokeWidth / 2, size.height),
+                    strokeWidth = strokeWidth
+                )
+            }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null, // デフォルトの波紋アニメーションをオフにして純粋な3D感にする
+                onClick = onClick
+            )
+            .padding(horizontal = 20.dp, vertical = 10.dp),
+        contentAlignment = Alignment.Center
     ) {
         Text(
             text = text,
-            style = TextStyle(fontSize = 18.sp, color = Color.White)
+            style = TextStyle(
+                fontSize = 16.sp,
+                color = Color.White
+            ),
+            // ★ ボタンを押した瞬間に文字が少し右下に移動して「凹む（へこむ）」リアルな演出
+            modifier = if (isPressed) Modifier.padding(top = 2.dp, start = 2.dp) else Modifier
         )
     }
 }
@@ -992,6 +1283,40 @@ private fun makePuzzleCondition(filesDir: File, puzzleID: String): Puzzle {
         Log.e("makePuzzleCondition", "makePuzzleCondition で例外が発生しました", e)
     }
     return puzzle
+}
+
+/*****************************************************************************
+ * assets 内のフォルダを filesDir 内の対象フォルダへ一括コピーする
+ * @param context アプリケーションコンテキスト
+ * @param assetFolderPath assets 内のフォルダパス
+ * @param targetDir コピー先フォルダ
+ *****************************************************************************/
+private fun copyAssetFolder(context: Context, assetFolderPath: String, targetDir: File) {
+    val assetManager = context.assets
+    val files = assetManager.list(assetFolderPath) ?: return
+
+    if (!targetDir.exists()) {
+        targetDir.mkdirs() // ターゲットフォルダを作成
+    }
+
+    for (filename in files) {
+        val assetPath = "$assetFolderPath/$filename"
+        val subFiles = assetManager.list(assetPath)
+
+        val targetFile = File(targetDir, filename)
+
+        if (!subFiles.isNullOrEmpty()) {
+            // サブフォルダ（例: Y000X000）の場合は再帰呼び出し
+            copyAssetFolder(context, assetPath, targetFile)
+        } else {
+            // ファイル（例: answer.json や answer.bin）の場合はコピー
+            assetManager.open(assetPath).use { input ->
+                FileOutputStream(targetFile).use { output ->
+                    input.copyTo(output)
+                }
+            }
+        }
+    }
 }
 
 /******************************************************************************
@@ -1101,4 +1426,26 @@ private fun JsonReader.nextIntList(): List<Int> {
     endArray()
     return list
 }
+/******************************************************************************
+ * Color 同士の加算 (+) 演算子オーバーロード
+ ******************************************************************************/
+operator fun Color.plus(other: Color): Color {
+    return Color(
+        red = (this.red + other.red).coerceIn(0f, 1f),
+        green = (this.green + other.green).coerceIn(0f, 1f),
+        blue = (this.blue + other.blue).coerceIn(0f, 1f),
+        alpha = this.alpha // アルファ（透明度）は元の色のまま保持
+    )
+}
 
+/**
+ * Color 同士の減算 (-) 演算子オーバーロード
+ */
+operator fun Color.minus(other: Color): Color {
+    return Color(
+        red = (this.red - other.red).coerceIn(0f, 1f),
+        green = (this.green - other.green).coerceIn(0f, 1f),
+        blue = (this.blue - other.blue).coerceIn(0f, 1f),
+        alpha = this.alpha
+    )
+}

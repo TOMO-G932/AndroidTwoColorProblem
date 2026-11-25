@@ -1,0 +1,19 @@
+<resources>
+    <string name="app_name">二色問題パズル</string>
+    <string name="image_file_read_error">画像読み込みエラー</string>"
+    <string name="select_puzzle_title">解きたいパズルを選択してください</string>
+    <string name="how_to_play">遊び方</string>
+    <string name="tutorial_1">セルの数と数字が一致するように２色に塗分けます。</string>
+    <string name="tutorial_2">タップで黒に、ダブルタップで白に、長押しでキャンセルされます。</string>
+    <string name="tutorial_3">ドラッグで範囲選択すると白黒が反転します</string>
+    <string name="tutorial_4">長押しドラッグで範囲選択するとまとめてキャンセルされます。</string>
+    <string name="tutorial_5">１のセルと周りのセルは白黒反対なので、自動的に塗分けが進みます。</string>
+    <string name="tutorial_6">ひとつの画像を分割したブロックを選択して、パズルを始めます。</string>
+    <string name="previous">&lt; 前へ</string>
+    <string name="exit">Exit</string>
+    <string name="next">次へ &gt;</string>
+    <string name="puzzle_file_read_error">パズルデータの読み込みに失敗しました。</string>
+    <string name="back_to_select">パズル選択に戻る</string>
+    <string name="reset_zoom">拡大リセット</string>
+    <string name="back_to_select_block">ブロック選択に戻る</string>"
+</resources>

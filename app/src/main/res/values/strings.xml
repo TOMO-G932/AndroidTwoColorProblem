@@ -1,3 +1,19 @@
 <resources>
     <string name="app_name">TwoColorProblem</string>
+    <string name="image_file_read_error">Image file read error</string>
+    <string name="select_puzzle_title">Please select a puzzle to solve</string>
+    <string name="how_to_play">How to Play</string>
+    <string name="tutorial_1">Paint in two colors so that cell counts match numbers.</string>
+    <string name="tutorial_2">Tap for black, double-tap for white, long-press to cancel.</string>
+    <string name="tutorial_3">Drag to select a range and reverse black and white.</string>
+    <string name="tutorial_4">Long-press drag to select and cancel all at once.</string>
+    <string name="tutorial_5">Since a \'1\' cell and its surroundings are opposite, painting progresses automatically.</string>
+    <string name="tutorial_6">Select a block from the split image to start the puzzle.</string>
+    <string name="previous">&lt; Prev</string>
+    <string name="exit">Exit</string>
+    <string name="next">Next &gt;</string>
+    <string name="puzzle_file_read_error">Puzzle data file read error</string>
+    <string name="back_to_select">Back to Puzzle Selection</string>
+    <string name="reset_zoom">Reset Zoom</string>
+    <string name="back_to_select_block">Back to Block Selection</string>"
 </resources>
